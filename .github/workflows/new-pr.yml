@@ -43,19 +43,36 @@ jobs:
         echo "Sending Slack notification..."
         curl --connect-timeout 2 -sSf -k -X POST -H 'Content-type: application/json' --data '{"text": "'"$PR_TITLE"'"}' $SLACK_WEBHOOK_URL
 
-    - name: backport_assign_check
+    - name: Backport Assign Check
       env:
         PR_NUMBER: ${{ github.event.pull_request.number }}
-        URL: ${{env.API_URL}}
+        URL: ${{ env.API_URL }}
         USER: ${{ secrets.USER }}
         PW: ${{ secrets.USER_CRED }}
       run: |
+        echo "Running backport assignment check..."
         PR="${{ github.event.pull_request.body }}"
-        echo $PR | grep -oP '\(backport #\K\d+' | tail -n 1)
-        author=$(gh pr view ${ORI_PR} -R ${REPO} --json author -q '.author.login')
-        if [[ ! "${author}" =~ "mergify" ]]; then
-          gh pr edit ${PR_NUMBER} -R ${REPO} --add-assignee ${author} || true
-          echo "ORI_PR=${ORI_PR}" >> $GITHUB_OUTPUT
+        ORI_PR=$(echo "$PR" | grep -oP '\(backport #\K\d+')
+        
+        if [ -n "$ORI_PR" ]; then
+          author=$(gh pr view "$ORI_PR" -R "${{ github.repository }}" --json author -q '.author.login')
+          if [[ ! "$author" =~ "mergify" ]]; then
+            gh pr edit "$PR_NUMBER" -R "${{ github.repository }}" --add-assignee "$author" || true
+            echo "Assigned $author to pull request #$PR_NUMBER."
+            echo "ORI_PR=${ORI_PR}" >> $GITHUB_OUTPUT
+          else
+            echo "The original pull request author is 'mergify'; skipping assignment."
+          fi
+        else
+          echo "No backport pull request found."
+        fi
+
+        # Triggering the audit run
+        if curl --connect-timeout 2 -sSf -k -u "$USER:$PW" -X POST -H 'Content-type: application/json' --data '{"pr_number": "'"$PR_NUMBER"'"}' "$URL/api/run/audit"; then
+          echo "Audit run triggered successfully."
+        else
+          echo "Failed to trigger audit run."
+          exit 1
         fi
         
         curl --connect-timeout 2 -sSf -k -u "$USER:$PW" -X POST -H 'Content-type: application/json' --data '{"pr_number": "'"$PR_NUMBER"'"}' $URL/api/run/audit
