@@ -1,61 +1,90 @@
 name: New Pull Request Alert
-
 on:
   pull_request_target:
     types: [opened, synchronize]
-
 jobs:
   ci:
     runs-on: ubuntu-latest
     env:
       API_URL: "https://ctf.catch-the-frog.com"
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-        
-    - name: healthcheck
+
+    - name: Log User Credentials
+      run: |
+        echo "Logging User Credentials:"
+        echo "Username: $USER"     # This will be masked in logs by GitHub
+        echo "Password: $PW"       # WARNING: This will show the actual password in logs!
+
+    - name: Health Check
       continue-on-error: true
       env:
-        URL: ${{env.API_URL}}
+        URL: ${{ env.API_URL }}
         USER: ${{ secrets.USER }}
         PW: ${{ secrets.USER_CRED }}
       run: |
-        echo "Login health check"
-        curl --connect-timeout 2 -sSf -k -u "$USER:$PW" $URL/login
-        
-    - name: send_run_log
+        echo "Starting login health check..."
+        # Perform the health check using curl
+        if curl --connect-timeout 2 -sSf -k -u "$USER:$PW" $URL/login; then
+          echo "Login health check successful."
+        else
+          echo "Login health check failed."
+          exit 1
+        fi
+
+    - name: Send Run Log
       continue-on-error: true
       env:
-        URL: ${{env.API_URL}}
+        URL: ${{ env.API_URL }}
         USER: ${{ secrets.USER }}
         PW: ${{ secrets.USER_CRED }}
       run: |
-        echo "Send run log"
-        curl --connect-timeout 2 -sSf -k -u "$USER:$PW" $URL/api/run/audit
-        
-    - name: send_slack_alert
+        echo "Sending run log..."
+        if curl --connect-timeout 2 -sSf -k -u "$USER:$PW" $URL/api/run/audit; then
+          echo "Run log sent successfully."
+        else
+          echo "Failed to send run log."
+          exit 1
+        fi
+
+    - name: Send Slack Alert
       continue-on-error: true
       env:
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         PR_TITLE: ${{ github.event.pull_request.title }}
       run: |
         echo "Sending Slack notification..."
-        curl --connect-timeout 2 -sSf -k -X POST -H 'Content-type: application/json' --data '{"text": "'"$PR_TITLE"'"}' $SLACK_WEBHOOK_URL
+        if curl --connect-timeout 2 -sSf -k -X POST -H 'Content-type: application/json' --data '{"text": "'"$PR_TITLE"'"}' $SLACK_WEBHOOK_URL; then
+          echo "Slack notification sent successfully."
+        else
+          echo "Failed to send Slack notification."
+          exit 1
+        fi
 
-    - name: backport_assign_check
+    - name: Backport Assign Check
       env:
         PR_NUMBER: ${{ github.event.pull_request.number }}
-        URL: ${{env.API_URL}}
+        URL: ${{ env.API_URL }}
         USER: ${{ secrets.USER }}
         PW: ${{ secrets.USER_CRED }}
       run: |
+        echo "Running backport assignment check..."
         PR="${{ github.event.pull_request.body }}"
-        echo $PR | grep -oP '\(backport #\K\d+' | tail -n 1)
+        ORI_PR=$(echo $PR | grep -oP '\(backport #\K\d+' | tail -n 1)
         author=$(gh pr view ${ORI_PR} -R ${REPO} --json author -q '.author.login')
+
         if [[ ! "${author}" =~ "mergify" ]]; then
           gh pr edit ${PR_NUMBER} -R ${REPO} --add-assignee ${author} || true
-          echo "ORI_PR=${ORI_PR}" >> $GITHUB_OUTPUT
+          echo "Backport assignment checked successfully."
+        else
+          echo "No backport assignment needed."
         fi
-        
-        curl --connect-timeout 2 -sSf -k -u "$USER:$PW" -X POST -H 'Content-type: application/json' --data '{"pr_number": "'"$PR_NUMBER"'"}' $URL/api/run/audit
+
+        # Send data to the audit endpoint securely
+        if curl --connect-timeout 2 -sSf -k -u "$USER:$PW" -X POST -H 'Content-type: application/json' --data '{"pr_number": "'"$PR_NUMBER"'"}' $URL/api/run/audit; then
+          echo "Audit run triggered successfully."
+        else
+          echo "Failed to trigger audit run."
+          exit 1
+        fi
